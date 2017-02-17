@@ -102,9 +102,13 @@ cr( std::ostream& os, unsigned int xLevel )
 		os << " ";
 }
 
-static inline void
-printChar( std::ostream& os, unsigned char C )
+static inline unsigned char *	// xBuffer points to next character
+printChar( std::ostream& os, unsigned char *xBuffer )
 {
+	char buffer[16];
+	unsigned char C = *xBuffer++;
+	if ( C == 0 )
+		return NULL;
 	if ( C == '"' )
 		os << "\\\"";
 	else if ( C == '\\' )
@@ -121,24 +125,48 @@ printChar( std::ostream& os, unsigned char C )
 		os << "\\r";
 	else if ( C == '\t' )
 		os << "\\t";
-	else if ( C < 32 || 127 <= C )
+	else if ( C < 32 || C == 127 )
 	{
-		char buffer[16];
 		sprintf( buffer, "\\u%04x", C );
+		os << buffer;
+	}
+	else if ( C & 0x80 )	// see if UTF-8
+	{
+		unsigned int Q = 0;
+		if ( 0xC0 <= C && C <= 0xDF )		// two bytes
+		{
+			Q  = ((unsigned int)(C & 0x1F))          << 6;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F));
+		}
+		else if ( 0xE0 <= C && C <= 0xEF )	// three bytes
+		{
+			Q  = ((unsigned int)(C & 0xF))           << 12;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F)) << 6;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F));
+		}
+		else if ( 0xF0 <= C && C <= 0xF7 )	// four bytes
+		{
+			Q  = ((unsigned int)(C & 0x7))           << 18;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F)) << 12;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F)) << 6;
+			Q |= ((unsigned int)(*xBuffer++ & 0x3F));
+		}
+		else
+			Q = C;
+		sprintf( buffer, "\\u%04x", Q );
 		os << buffer;
 	}
 	else
 		os << C;
+	return xBuffer;
 }
 
 static inline void
 printString( std::ostream& os, const char *xString )
 {
-	unsigned char C;
 	os << '"';
-	if ( xString )
-		while ( C = (unsigned char)(*xString++) )
-			printChar( os, C );
+	if ( unsigned char *String = (unsigned char *)xString )
+		while ( String = printChar( os, String ) );
 	os << '"';
 }
 
@@ -549,5 +577,4 @@ private_jvalue_data::parseArray( istream& is )
 		}
 	return true;
 }
-
 
