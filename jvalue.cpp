@@ -70,7 +70,7 @@ private_jvalue_data::deleteValue()	// private function to delete data in union i
 {
 	switch( mType )		// special case for strings, objects, arrays
 	{
-		case JSTRING: delete mValue.mString; break;
+		case JSTRING: delete[] mValue.mString; break;
 		case JOBJECT: delete mValue.mObject; break;	// will potentially be recursive
 		case JARRAY:  delete mValue.mArray;  break;	// will potentially be recursive
 		default: break;	// most don't require extra work
