@@ -320,7 +320,7 @@ private_jvalue_data::parse( istream& is )
 	return false;
 }
 
-static inline int
+static inline size_t
 readHex( istream& is )
 {
 	int C = is.get();
@@ -334,7 +334,7 @@ readHex( istream& is )
 	return 0;
 }
 
-static inline int
+static inline size_t
 readHex4( istream& is )
 {
 	return
@@ -342,6 +342,52 @@ readHex4( istream& is )
 		(readHex( is ) << 8)  |
 		(readHex( is ) << 4)  |
 		 readHex( is );
+}
+
+static inline void
+utfEncode( size_t xIn, string& xString ) // encode xIn into UTF-8, append to xString
+{
+	if ( xIn <= 0x7F )
+	{
+		// single character
+		xString += xIn;
+		return;
+	}
+	if ( xIn <= 0x7FF )
+	{
+		// two characters
+		int C1 = ((xIn >> 6) & 0x1F) | 0xC0;
+		int C2 = (xIn        & 0x3F) | 0x80;
+		xString += C1;
+		xString += C2;
+		return;
+	}
+	if ( xIn <= 0xFFFF )
+	{
+		// three characters
+		int C1 = ((xIn >> 12) & 0x0F) | 0xE0;
+		int C2 = ((xIn >> 6)  & 0x3F) | 0x80;
+		int C3 = ( xIn        & 0x3F) | 0x80;
+		xString += C1;
+		xString += C2;
+		xString += C3;
+		return;
+	}
+	if ( xIn <= 0x10FFFF )
+	{
+		// four characters
+		int C1 = ((xIn >> 18) & 0x07) | 0xF0;
+		int C2 = ((xIn >> 12) & 0x3F) | 0x80;
+		int C3 = ((xIn >> 6)  & 0x3F) | 0x80;
+		int C4 = ( xIn        & 0x3F) | 0x80;
+		xString += C1;
+		xString += C2;
+		xString += C3;
+		xString += C4;
+		return;
+	}
+	// illegal character
+	xString += "<BADC>";
 }
 
 static bool
@@ -381,7 +427,8 @@ rawParseString( istream& is, string& xString )	// helper function for parseStrin
 				case EOF:
 					return false;
 				case 'u':
-					C = readHex4( is );
+					utfEncode( readHex4( is ), xString ); // encode into UTF-8
+					break;
 				default:
 					xString += C;
 					break;
