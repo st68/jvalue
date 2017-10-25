@@ -41,14 +41,20 @@
  *
  */
 
+// #define SINGLE_THREAD
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <iostream>
 #include <string>
 #include <memory>
 #include <map>
 #include <vector>
-#include "crbncpy.h"
+
+#ifndef SINGLE_THREAD
+#include "mutex.h"
+#endif
 
 using namespace std;
 class jvalue;
@@ -56,7 +62,7 @@ class jvalue;
 typedef map<string,jvalue> object_map_t;
 typedef vector<jvalue> array_vector_t;
 
-enum jType { JNULL, JBOOL, JSTRING, JINTEGER, JDOUBLE, JOBJECT, JARRAY };
+enum jType { JNULL, JBOOL, JSTRING, JINTEGER, JDOUBLE, JOBJECT, JARRAY, JBAD };
 
 class jerr
 {
@@ -94,10 +100,9 @@ class private_jvalue_data
 		private_jvalue_data( const private_jvalue_data& xData );	// copy from data
 		private_jvalue_data( const jvalue& xValue );	// copy from value
 
-		~private_jvalue_data() { deleteValue(); }
+		~private_jvalue_data() { deleteValueNL(); mType = JBAD; }
 
-		private_jvalue_data& operator=( const private_jvalue_data& xData )
-			{ deleteValue(); mType = xData.mType; mValue = xData.mValue; return *this; }
+		private_jvalue_data& operator=( const private_jvalue_data& xData );
 
 		private_jvalue_data& operator=( const string& xValue )      {  String( xValue.c_str() ); return *this; }
 		private_jvalue_data& operator=( const char *xValue )        {  String( xValue ); return *this; }
@@ -114,11 +119,12 @@ class private_jvalue_data
 
 		jvalue& operator[]( size_t xPos );
 		jvalue& operator[]( const char *xString );
-		jvalue& operator[]( const string& xString ) { return operator[]( xString.c_str() ); }
+		jvalue& operator[]( const string& xString )     { return operator[]( xString.c_str() ); }
 
 		jvalue& operator[]( unsigned long long xValue ) { return operator[]( (size_t)xValue ); }
-		jvalue& operator[]( int xValue )                { return operator[]( (size_t)xValue ); }
-		jvalue& operator[]( char xValue )               { return operator[]( (size_t)xValue ); }
+		jvalue& operator[]( int xValue )                { if ( xValue < 0 ) throw jerr::error( "negative array index" ); return operator[]( (size_t)xValue ); }
+		jvalue& operator[]( unsigned char xValue )      { return operator[]( (size_t)xValue ); }
+		jvalue& operator[]( char xValue )               { size_t V = xValue; V &= 0xFF; return operator[]( V ); }
 
 		// add elements to an Array
 		void push_back( const string& xValue ) { push_back( xValue.c_str() ); }
@@ -186,17 +192,25 @@ class private_jvalue_data
 		object_map_t   *Object()  const { return mType == JOBJECT  ? mValue.mObject : NULL; }
 		array_vector_t *Array()   const { return mType == JARRAY   ? mValue.mArray : NULL;  }
 
-		void Null()                          { deleteValue(); mType = JNULL;                                        }
-		void Bool( bool xValue )             { deleteValue(); mType = JBOOL;    mValue.mBool = xValue;              }
-		void String( const char *xValue )    { deleteValue(); mType = JSTRING;  mValue.mString = crbncpy( xValue ); }
-		void Integer( long long xValue )     { deleteValue(); mType = JINTEGER; mValue.mInteger = xValue;           }
-		void Double( double xValue )         { deleteValue(); mType = JDOUBLE;  mValue.mDouble = xValue;            }
-		void Object( object_map_t *xValue )  { deleteValue(); mType = JOBJECT;  mValue.mObject = xValue;            }
-		void Array( array_vector_t *xValue ) { deleteValue(); mType = JARRAY;   mValue.mArray = xValue;             }
+		void Null()                          { deleteValue(); mType = JNULL;                                                          unlock(); }
+		void Bool( bool xValue )             { deleteValue(); mType = JBOOL;    mValue.mBool = xValue;                                unlock(); }
+		void String( const char *xValue )    { deleteValue(); mType = JSTRING;  mValue.mString = scopy( xValue );                     unlock(); }
+		void Integer( long long xValue )     { deleteValue(); mType = JINTEGER; mValue.mInteger = xValue;                             unlock(); }
+		void Double( double xValue )         { deleteValue(); mType = JDOUBLE;  mValue.mDouble = xValue;                              unlock(); }
+		void Object( object_map_t *xValue )  { deleteValue(); mType = JOBJECT;  mValue.mObject = xValue ? xValue : new object_map_t;  unlock(); }
+		void Array( array_vector_t *xValue ) { deleteValue(); mType = JARRAY;   mValue.mArray = xValue ? xValue : new array_vector_t; unlock(); }
 
 		jType type() const { return mType; }
+
+		size_t size();
 		size_t size() const;
 		bool empty() const;
+		bool empty();
+
+	private:
+		size_t sizeNL() const;
+		bool emptyNL() const;
+	public:
 
 		bool isNull() const    { return mType == JNULL;    }
 		bool isBool() const    { return mType == JBOOL;    }
@@ -207,8 +221,11 @@ class private_jvalue_data
 		bool isArray() const   { return mType == JARRAY;   }
 
 		// THESE ONLY WORK IF JVALUE IS ALREADY AN OBJECT
+		// UNDEFINED BEHAVIOUR IF NOT
 		object_map_t::const_iterator begin() const { return mValue.mObject->begin(); }
 		object_map_t::const_iterator end() const { return mValue.mObject->end(); }
+		object_map_t::iterator begin() { return mValue.mObject->begin(); }
+		object_map_t::iterator end() { return mValue.mObject->end(); }
 
 		void print( ostream&, unsigned int xLevel = 0 ) const;
 		bool parse( istream& is );
@@ -227,10 +244,35 @@ class private_jvalue_data
 
 		jType mType;
 
+		#ifndef SINGLE_THREAD
+			mutex mLockData;	// if mutable, unexpected optimizations occur
+		#endif
+
 	private:
 
-		void deleteValue();
-		void toJARRAY();
+		#ifdef SINGLE_THREAD
+			void lock( int xLine ) {}
+			void unlock() {}
+		#else
+			void lock( int xLine ) { mLockData.lock(); }
+			void unlock() { mLockData.unlock(); }
+		#endif
+
+		void deleteValue()
+			{
+				lock(__LINE__);
+				deleteValueNL();
+			}
+		void deleteValueNL();
+
+		void toJARRAY()
+			{
+				lock(__LINE__);
+				toJARRAY_NL();
+			}
+		void toJARRAY_NL();
+
+		static char *scopy( const char *xIn );
 
 		void printObject( ostream&, unsigned int ) const;
 		void printArray( ostream&, unsigned int ) const;
@@ -385,6 +427,8 @@ class jvalue : public shared_ptr<private_jvalue_data>		// a jvalue is only an ov
 
 		void print( std::ostream& os ) const { shared_ptr<private_jvalue_data>::get()->print( os ); }
 		bool parse( std::istream& is ) { return shared_ptr<private_jvalue_data>::get()->parse( is ); }
+
+		void print() const { cout << *this << endl; }
 
 };
 

@@ -1,5 +1,8 @@
 
 #include "jvalue.h"
+#include "crbncpy.h"
+#include <set>
+using namespace std;
 
 jerr *
 jerr::error( const char *xMsg )
@@ -9,11 +12,45 @@ jerr::error( const char *xMsg )
 	return &TheOne;
 }
 
+private_jvalue_data&
+private_jvalue_data::operator=( const private_jvalue_data& xData )
+{
+	deleteValue();
+	switch( mType = xData.mType )
+	{
+		case JBOOL:
+			mValue.mBool = xData.mValue.mBool;
+			break;
+		case JINTEGER:
+			mValue.mInteger = xData.mValue.mInteger;
+			break;
+		case JDOUBLE:
+			mValue.mDouble = xData.mValue.mDouble;
+			break;
+		case JSTRING:
+			mValue.mString = scopy( xData.mValue.mString );
+			break;
+		case JOBJECT:
+			mValue.mObject = new object_map_t( *xData.mValue.mObject );
+			break;
+		case JARRAY:
+			mValue.mArray = new array_vector_t( *xData.mValue.mArray );
+			break;
+		case JNULL:
+		case JBAD:
+		default:
+			break;
+	}
+	unlock();
+	return *this;
+}
+
 void
 private_jvalue_data::push_back( const char *xValue )
 {
 	toJARRAY();										// if not already an array, make it so
 	mValue.mArray->push_back( jvalue( xValue ) );	// push a jvalue string onto the array
+	unlock();
 }
 
 void
@@ -21,6 +58,7 @@ private_jvalue_data::push_back( long long xValue )
 {
 	toJARRAY();
 	mValue.mArray->push_back( jvalue( xValue ) );
+	unlock();
 }
 
 void
@@ -28,6 +66,7 @@ private_jvalue_data::push_back( double xValue )
 {
 	toJARRAY();
 	mValue.mArray->push_back( jvalue( xValue ) );
+	unlock();
 }
 
 void
@@ -35,6 +74,7 @@ private_jvalue_data::push_back( bool xValue )
 {
 	toJARRAY();
 	mValue.mArray->push_back( jvalue( xValue ) );
+	unlock();
 }
 
 void
@@ -42,47 +82,56 @@ private_jvalue_data::push_back( jvalue& xValue )
 {
 	toJARRAY();
 	mValue.mArray->push_back( xValue );
+	unlock();
 }
 
 jvalue&
 private_jvalue_data::operator[]( size_t xPos )
 {
-	toJARRAY();									// convert to an array if not already one
+	toJARRAY();								// convert to an array if not already one
 	while ( xPos >= mValue.mArray->size() )		// if array not large enough
 		mValue.mArray->push_back( jvalue() );	//   push NULL's so access is always valid
-	return (*mValue.mArray)[xPos];				// return reference to appropriate location
+	jvalue& Q = (*mValue.mArray)[xPos];				// return reference to appropriate location
+	unlock();
+	return Q;
 }
 
 jvalue&
 private_jvalue_data::operator[]( const char *xName )
 {
-	if ( mType != JOBJECT )						// convert to object if not already one
+	if ( !xName )
+		throw jerr::error( "missing object-element identifier" );
+	lock(__LINE__);
+	if ( mType != JOBJECT )		// convert to object if not already one
 	{
-		deleteValue();
+		deleteValueNL();
 		mType = JOBJECT;
 		mValue.mObject = new object_map_t;
 	}
-	return (*mValue.mObject)[xName];			// return reference to appropriate location (create if not there)
+	jvalue& Q = (*mValue.mObject)[xName];	// return reference to appropriate location (create if not there)
+	unlock();
+	return Q;
 }
 
 void
-private_jvalue_data::deleteValue()	// private function to delete data in union if necessary
+private_jvalue_data::deleteValueNL()	// private function to delete data in union if necessary
 {
 	switch( mType )		// special case for strings, objects, arrays
 	{
 		case JSTRING: delete[] mValue.mString; break;
 		case JOBJECT: delete mValue.mObject; break;	// will potentially be recursive
 		case JARRAY:  delete mValue.mArray;  break;	// will potentially be recursive
+		case JBAD:    throw jerr::error( "deleting deleted jvalue value?" );
 		default: break;	// most don't require extra work
 	}
 }
 
 void
-private_jvalue_data::toJARRAY()	// convert to array if necessary
+private_jvalue_data::toJARRAY_NL()	// convert to array if necessary
 {
 	if ( mType == JARRAY )
 		return;
-	deleteValue();
+	deleteValueNL();
 	mType = JARRAY;
 	mValue.mArray = new array_vector_t;
 }
@@ -171,7 +220,22 @@ printString( std::ostream& os, const char *xString )
 }
 
 size_t
+private_jvalue_data::size()
+{
+	lock(__LINE__);
+	size_t S = sizeNL();
+	unlock();
+	return S;
+}
+
+size_t
 private_jvalue_data::size() const
+{
+	return sizeNL();
+}
+
+size_t
+private_jvalue_data::sizeNL() const
 {
 	switch( mType )
 	{
@@ -182,12 +246,28 @@ private_jvalue_data::size() const
 		case JDOUBLE:  return 1;
 		case JOBJECT:  return mValue.mObject ? mValue.mObject->size() : 0;
 		case JARRAY:   return mValue.mArray ? mValue.mArray->size() : 0;
+		case JBAD:     throw jerr::error( "accessing deleted jvalue (size)" );
 	}
 	return 0;
 }
 
 bool
+private_jvalue_data::empty()
+{
+	lock(__LINE__);
+	bool E = emptyNL();
+	unlock();
+	return E;
+}
+
+bool
 private_jvalue_data::empty() const
+{
+	return emptyNL();
+}
+
+bool	// private
+private_jvalue_data::emptyNL() const
 {
 	switch( mType )
 	{
@@ -198,8 +278,19 @@ private_jvalue_data::empty() const
 		case JDOUBLE:  return false;
 		case JOBJECT:  return mValue.mObject ? mValue.mObject->empty() : true;
 		case JARRAY:   return mValue.mArray ? mValue.mArray->empty() : true;
+		case JBAD:     throw jerr::error( "accessing deleted jvalue (empty)" );
 	}
 	return false;
+}
+
+char *	// static
+private_jvalue_data::scopy( const char *xIn )
+{
+	if ( !xIn ) xIn = "";	// always return something
+	size_t len = strlen( xIn );
+	char *RV = new char[len + 1];
+	strcpy( RV, xIn );
+	return RV;
 }
 
 void
@@ -214,6 +305,7 @@ private_jvalue_data::print( std::ostream& os, unsigned int xLevel ) const
 		case JDOUBLE:  os << mValue.mDouble;                    break;
 		case JOBJECT:  printObject( os, xLevel + 1 );           break;
 		case JARRAY:   printArray( os, xLevel + 1 );            break;
+		case JBAD:     throw jerr::error( "accessing deleted jvalue (print)" );
 	}
 }
 
@@ -256,18 +348,20 @@ private_jvalue_data::printArray( std::ostream& os, unsigned int xLevel ) const
 {
 	array_vector_t& Vector = *mValue.mArray;
 	os << "[";
-	if ( Vector.size() <= 4 )
+	if ( Vector.empty() )
 	{
-		if ( !Vector.empty() )
-			os << Vector[0];
+		// nothing to print...
+	}
+	else if ( Vector.size() <= 4 )
+	{
+		os << Vector[0];
 		for ( size_t index = 1; index < Vector.size(); index++ )
 		{
 			os << ",";
-			if ( Vector.size() > 4 ) os << endl;
 			os << Vector[index];
 		}
 	}
-	else if ( !Vector.empty() )
+	else
 	{
 		cr( os, xLevel );
 		os << Vector[0];
@@ -579,6 +673,7 @@ private_jvalue_data::parseObject( istream& is )
 	deleteValue();
 	mType = JOBJECT;
 	mValue.mObject = new object_map_t;
+	unlock();
 	flushSpace( is );
 	int SecondC = is.peek();	// nothing in the object?
 	if ( SecondC == '}' )
@@ -607,7 +702,12 @@ private_jvalue_data::parseArray( istream& is )
 	if ( FirstC != '[' )
 		throw jerr::error( "private_jvalue_data::parseArray : first character is not '['" );
 	int LastC = flushSpace( is );
-	if ( LastC != ']' )
+	if ( LastC == ']' )
+	{
+		is.get();	// flush the ]
+	}
+	else
+	{
 		for ( ;; )
 		{
 			jvalue Value;
@@ -622,6 +722,43 @@ private_jvalue_data::parseArray( istream& is )
 				throw jerr::error( "private_jvalue_data::parseArray : missing comma between values" );
 			flushSpace( is );
 		}
+	}
 	return true;
 }
+
+#if 0
+#ifndef SINGLE_THREAD
+static mutex ONE;
+static std::set<const private_jvalue_data *> waiting;
+static std::set<const private_jvalue_data *> locked;
+
+void
+private_jvalue_data::lock( int xLine )
+{
+	ONE.lock();
+	waiting.insert( this );
+	ONE.unlock();
+
+	mLockData.lock();
+
+	ONE.lock();
+	locked.insert( this );
+	waiting.erase( this );
+	ONE.unlock();
+	printf( "j: %lu/%lu\n", waiting.size(), locked.size() );
+	fflush(stdout);
+}
+
+void
+private_jvalue_data::unlock()
+{
+	mLockData.unlock();
+
+	ONE.lock();
+	locked.erase( this );
+	ONE.unlock();
+}
+
+#endif
+#endif
 

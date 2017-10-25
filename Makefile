@@ -1,5 +1,5 @@
 
-testJSON : testJSON.o jvalue.o
+testJSON : testJSON.o jvalue.o mutex.o
 	g++ -o $@ testJSON.o jvalue.o
 
 jvalue.o : jvalue.cpp jvalue.h
